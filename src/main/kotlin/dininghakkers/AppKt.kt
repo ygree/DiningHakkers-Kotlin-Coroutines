@@ -6,42 +6,45 @@ import kotlinx.coroutines.channels.*
 
 class Hakker(val name: String)
 
-sealed class ChopstickState //TODO use inner class for the subclasses
-object ChopstickAvailable : ChopstickState()
-class ChopstickTaken(val hakker: Hakker) : ChopstickState()
+sealed class ChopstickState {
+    object Available : ChopstickState()
+    class Taken(val hakker: Hakker) : ChopstickState()
+}
 
-sealed class ChopstickCommand //TODO use inner class for the subclasses
-class TakeChopstick(val hakker: Hakker, val replyTo: SendChannel<ChopstickAnswer>) : ChopstickCommand()
-class PutChopstick(val hakker: Hakker) : ChopstickCommand()
+sealed class ChopstickCommand {
+    class Take(val hakker: Hakker, val replyTo: SendChannel<ChopstickAnswer>) : ChopstickCommand()
+    class Put(val hakker: Hakker) : ChopstickCommand()
+}
 
-sealed class ChopstickAnswer //TODO use inner class for the subclasses
-data class ChopstickAnswerTaken(val name: String, val chopstick: SendChannel<ChopstickCommand>) : ChopstickAnswer()
-class ChopstickBusy(name: String) : ChopstickAnswer()
+sealed class ChopstickAnswer {
+    class Taken(val name: String, val chopstick: SendChannel<ChopstickCommand>) : ChopstickAnswer()
+    class Busy(val name: String) : ChopstickAnswer()
+}
 
 fun CoroutineScope.chopstickActor(name: String) = actor<ChopstickCommand> {
-    var state: ChopstickState = ChopstickAvailable
+    var state: ChopstickState = ChopstickState.Available
     for (msg in channel) {
         when (state) {
             // When a Chopstick is taken by a hakker
             // It will refuse to be taken by other hakkers
             // But the owning hakker can put it back
-            is ChopstickTaken ->
+            is ChopstickState.Taken ->
                 when (msg) {
-                    is TakeChopstick -> msg.replyTo.send(ChopstickBusy(name))
-                    is PutChopstick -> {
+                    is ChopstickCommand.Take -> msg.replyTo.send(ChopstickAnswer.Busy(name))
+                    is ChopstickCommand.Put -> {
                         if (msg.hakker.name == state.hakker.name) {
-                            state = ChopstickAvailable
+                            state = ChopstickState.Available
                         } else {
                             TODO("Chopstick can't be put back by another hakker")
                         }
                     }
                 }
             // When a Chopstick is available, it can be taken by a hakker
-            is ChopstickAvailable ->
+            is ChopstickState.Available ->
                 when (msg) {
-                    is TakeChopstick -> {
-                        state = ChopstickTaken(msg.hakker)
-                        msg.replyTo.send(ChopstickAnswerTaken(name, channel))
+                    is ChopstickCommand.Take -> {
+                        state = ChopstickState.Taken(msg.hakker)
+                        msg.replyTo.send(ChopstickAnswer.Taken(name, channel))
                     }
                     else -> TODO("Chopstick isn't taken")
                 }
@@ -95,8 +98,8 @@ fun CoroutineScope.hakkerActor(name: String, left: SendChannel<ChopstickCommand>
                             }
                             ch.close()
                         }
-                        left.send(TakeChopstick(Hakker(name), ch))
-                        right.send(TakeChopstick(Hakker(name), ch))
+                        left.send(ChopstickCommand.Take(Hakker(name), ch))
+                        right.send(ChopstickCommand.Take(Hakker(name), ch))
                     }
                     else -> TODO("When thinking hakker can only start eating, not thinking!")
                 }
@@ -106,8 +109,8 @@ fun CoroutineScope.hakkerActor(name: String, left: SendChannel<ChopstickCommand>
                 when (msg) {
                     is HakkerCommand.Think -> {
                         println("$name puts down his chopsticks and starts to think")
-                        left.send(PutChopstick(Hakker(name)))
-                        right.send(PutChopstick(Hakker(name)))
+                        left.send(ChopstickCommand.Put(Hakker(name)))
+                        right.send(ChopstickCommand.Put(Hakker(name)))
                         state = HakkerState.Thinking
                         launch {
                             delay(5000L)
@@ -120,7 +123,7 @@ fun CoroutineScope.hakkerActor(name: String, left: SendChannel<ChopstickCommand>
                 when (msg) {
                     is HakkerCommand.ChopstickResponse -> {
                         when (msg.resp) {
-                            is ChopstickAnswerTaken -> {
+                            is ChopstickAnswer.Taken -> {
                                 val waitingOn = when (msg.resp.chopstick) {
                                     left -> right
                                     right -> left
@@ -129,7 +132,7 @@ fun CoroutineScope.hakkerActor(name: String, left: SendChannel<ChopstickCommand>
                                 state = HakkerState.WaitingForOtherChopstick(waitingOn, Pair(msg.resp.name, msg.resp.chopstick))
 
                             }
-                            is ChopstickBusy -> {
+                            is ChopstickAnswer.Busy -> {
                                 state = HakkerState.FirstChopstickDenied
                             }
                         }
@@ -142,7 +145,7 @@ fun CoroutineScope.hakkerActor(name: String, left: SendChannel<ChopstickCommand>
                 when (msg) {
                     is HakkerCommand.ChopstickResponse -> {
                         when (msg.resp) {
-                            is ChopstickAnswerTaken -> {
+                            is ChopstickAnswer.Taken -> {
                                 if (msg.resp.chopstick == state.waitingOn) {
                                     println("$name has picked up ${state.taken.first} and ${msg.resp.name} and starts to eat")
                                 }
@@ -152,8 +155,8 @@ fun CoroutineScope.hakkerActor(name: String, left: SendChannel<ChopstickCommand>
                                     channel.send(HakkerCommand.Think)
                                 }
                             }
-                            is ChopstickBusy -> {
-                                state.taken.second.send(PutChopstick(Hakker(name)))
+                            is ChopstickAnswer.Busy -> {
+                                state.taken.second.send(ChopstickCommand.Put(Hakker(name)))
                                 println("2nd chopstick is taken $name")
                                 state = HakkerState.Thinking
                                 launch {
@@ -172,16 +175,16 @@ fun CoroutineScope.hakkerActor(name: String, left: SendChannel<ChopstickCommand>
                 when (msg) {
                     is HakkerCommand.ChopstickResponse -> {
                         when (msg.resp) {
-                            is ChopstickBusy -> {
+                            is ChopstickAnswer.Busy -> {
                                 state = HakkerState.Thinking
                                 launch {
                                     delay(10000L)
                                     channel.send(HakkerCommand.Eat)
                                 }
                             }
-                            is ChopstickAnswerTaken -> {
+                            is ChopstickAnswer.Taken -> {
                                 println("1st chopstick is taken $name")
-                                msg.resp.chopstick.send(PutChopstick(Hakker(name)))
+                                msg.resp.chopstick.send(ChopstickCommand.Put(Hakker(name)))
                                 state = HakkerState.Thinking;
                                 launch {
                                     delay(10000L)
